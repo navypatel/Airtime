@@ -1,0 +1,47 @@
+# Airtime — local development stack
+#   docker compose up        → app:3000 · redis:6379 · mongo:27017 · media:4443
+#   node backend/seed.js     → demo dataset (mirrors src/data/seed.ts)
+#
+# Production deltas (AWS): app → ECS/Fargate behind ALB · redis → ElastiCache
+# (cluster mode) · mongo → DocumentDB/Atlas · HLS disk → S3 + CloudFront ·
+# media → c5/c6i ASG (workers = vCPU) · add coturn TURN/STUN ASG + Global
+# Accelerator for WebRTC ingest, SES+SQS for go-live emails.
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: ["redis-data:/data"]
+
+  mongo:
+    image: mongo:7
+    ports: ["27017:27017"]
+    volumes: ["mongo-data:/data/db"]
+
+  app:
+    build: ./backend
+    ports: ["3000:3000"]
+    environment:
+      REDIS_URL: redis://redis:6379
+      MONGO_URL: mongodb://mongo:27017
+      JWT_SECRET: local-dev-secret
+      PORT: 3000
+    depends_on: [redis, mongo]
+
+  media:
+    build: ./media-service          # Debian + mediasoup deps + ffmpeg + coturn client libs
+    network_mode: host              # WebRTC needs real ports; in ECS → awsvpc + SIPRANGE SG
+    environment:
+      REDIS_URL: redis://localhost:6379
+      HLS_BUCKET: airtime-hls-dev
+      ANNOUNCED_IP: 127.0.0.1
+      WORKER_COUNT: 4               # locally: 4; prod boxes run 1 worker per vCPU
+    depends_on: [redis]
+    volumes:
+      - hls-out:/hls                # segment staging dir before S3 push
+
+volumes:
+  redis-data:
+  mongo-data:
+  hls-out:
